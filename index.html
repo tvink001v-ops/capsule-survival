@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>3D Multiplayer — Supabase</title>
+<link rel="icon" href="data:,">
 <style>
   * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
   html, body { margin:0; padding:0; overflow:hidden; background:#87ceeb;
@@ -92,14 +93,13 @@
 import * as THREE from 'three';
 import { createClient } from '@supabase/supabase-js';
 
-// ============ НАСТРОЙКИ SUPABASE ============
+// ============ НАСТРОЙКИ ============
 const SUPABASE_URL = 'https://ntveumbrjmiohkwyousi.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_SxPUHPfXoTjkdKUOT-WbGg_L5SBhEkd';
-
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-const CHANNEL_NAME = 'game-room-3d';
+const CHANNEL_NAME = 'game-room-3d-v2';
 
-// ============ ОПРЕДЕЛЕНИЕ УСТРОЙСТВА ============
+// ============ УСТРОЙСТВО ============
 function detectDevice() {
   const ua = navigator.userAgent;
   const platform = navigator.platform || '';
@@ -173,8 +173,9 @@ const player = {
   yaw: 0, pitch: 0,
   onGround: true, height: 1.7,
   name: '',
-  id: null,
-  color: null,
+  id: crypto.randomUUID ? crypto.randomUUID() : 'p' + Math.random().toString(36).slice(2),
+  color: '#' + new THREE.Color().setHSL(Math.random(), 0.6, 0.55).getHexString(),
+  subscribed: false,
 };
 
 // ============ ВВОД ПК ============
@@ -276,7 +277,7 @@ function updateJoystick(cx, cy) {
   touchState.moveY = dy / maxR;
 }
 
-// ============ МОДЕЛЬКА ЧЕЛОВЕЧКА ============
+// ============ МОДЕЛЬКА ============
 function createHumanoid(name, color, deviceIcon) {
   const g = new THREE.Group();
   const clothColor = new THREE.Color(color);
@@ -363,14 +364,15 @@ const others = new Map();
 function connectRealtime(name) {
   document.getElementById('err').textContent = '';
   player.name = name;
-  player.id = crypto.randomUUID ? crypto.randomUUID() : 'p' + Math.random().toString(36).slice(2);
-  player.color = '#' + new THREE.Color().setHSL(Math.random(), 0.6, 0.55).getHexString();
 
-  // Используем публичный канал (по умолчанию). Ключ publishable работает с публичными каналами.
   channel = supabase.channel(CHANNEL_NAME, {
-    config: { broadcast: { self: false } }
+    config: {
+      broadcast: { self: false },
+      presence: { key: player.id }
+    }
   });
 
+  // 1. Слушаем позиции других
   channel.on('broadcast', { event: 'player-move' }, ({ payload }) => {
     if (payload.id === player.id) return;
     const o = others.get(payload.id);
@@ -380,45 +382,53 @@ function connectRealtime(name) {
     }
   });
 
-  channel.on('broadcast', { event: 'player-join' }, ({ payload }) => {
-    if (payload.id === player.id) return;
-    addPlayer(payload.id, payload);
+  // 2. Presence: синхронизация списка игроков (надёжнее, чем ручной join)
+  channel.on('presence', { event: 'sync' }, () => {
+    const state = channel.presenceState();
+    const currentIds = new Set();
+
+    for (const id in state) {
+      if (id === player.id) continue;
+      currentIds.add(id);
+      if (!others.has(id)) {
+        const meta = state[id][0] || {};
+        addPlayer(id, {
+          name: meta.name || 'Player',
+          color: meta.color || '#888',
+          device: meta.device || { icon: '❓', label: 'Unknown' },
+          x: meta.x || 0, y: meta.y || 0, z: meta.z || 0, yaw: meta.yaw || 0
+        });
+      }
+    }
+
+    // Удаляем тех, кто вышел
+    for (const id of others.keys()) {
+      if (!currentIds.has(id)) removePlayer(id);
+    }
   });
 
-  channel.on('broadcast', { event: 'player-leave' }, ({ payload }) => {
-    if (payload.id === player.id) return;
-    removePlayer(payload.id);
-  });
-
-  channel.on('broadcast', { event: 'sync-request' }, ({ payload }) => {
-    if (payload.id === player.id) return;
-    sendMove(true);
-  });
-
-  channel.subscribe((status) => {
+  channel.subscribe(async (status) => {
     if (status === 'SUBSCRIBED') {
       console.log('Connected to Supabase Realtime');
-      channel.send({
-        type: 'broadcast',
-        event: 'player-join',
-        payload: {
-          id: player.id,
-          name: player.name,
-          color: player.color,
-          x: player.pos.x,
-          y: player.pos.y - player.height,
-          z: player.pos.z,
-          yaw: player.yaw,
-          device: { icon: DEVICE.icon, label: DEVICE.label, detail: DEVICE.detail }
-        }
+      player.subscribed = true;
+
+      // Отправляем свой стейт через Presence (это синхронизирует всех)
+      await channel.track({
+        name: player.name,
+        color: player.color,
+        device: { icon: DEVICE.icon, label: DEVICE.label, detail: DEVICE.detail },
+        x: player.pos.x,
+        y: player.pos.y - player.height,
+        z: player.pos.z,
+        yaw: player.yaw,
       });
-      channel.send({ type: 'broadcast', event: 'sync-request', payload: { id: player.id } });
+
       document.getElementById('menu').style.display = 'none';
       document.getElementById('crosshair').style.display = 'block';
       if (isMobile) enableTouchUI();
       else renderer.domElement.requestPointerLock();
     } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-      document.getElementById('err').textContent = 'Ошибка подключения. Проверь настройки Realtime (публичный доступ к каналам).';
+      document.getElementById('err').textContent = 'Ошибка подключения. Проверь настройки Realtime.';
     }
   });
 }
@@ -444,11 +454,12 @@ function removePlayer(id) {
   if (o) { scene.remove(o.model.group); others.delete(id); }
 }
 
+// Отправка позиции (только после подписки)
 let lastSend = 0;
-function sendMove(force = false) {
-  if (!channel) return;
+function sendMove() {
+  if (!channel || !player.subscribed) return;
   const now = performance.now();
-  if (!force && now - lastSend < 50) return;
+  if (now - lastSend < 50) return;
   lastSend = now;
   channel.send({
     type: 'broadcast',
@@ -554,12 +565,12 @@ function update(dt) {
   document.getElementById('players').innerHTML = html;
 }
 
-// ============ ГЛАВНЫЙ ЦИКЛ ============
+// ============ ЦИКЛ ============
 let last = performance.now();
 function animate(now) {
   const dt = Math.min((now - last) / 1000, 0.1);
   last = now;
-  if (player.name && channel) {
+  if (player.name) {
     update(dt);
     sendMove();
   }
@@ -573,11 +584,6 @@ addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
 });
-addEventListener('orientationchange', () => setTimeout(() => {
-  camera.aspect = innerWidth / innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
-}, 200));
 
 // ============ UI ============
 document.getElementById('joinBtn').addEventListener('click', () => {
@@ -597,8 +603,8 @@ renderer.domElement.addEventListener('click', () => {
 document.addEventListener('contextmenu', e => e.preventDefault());
 
 window.addEventListener('beforeunload', () => {
-  if (channel && player.id) {
-    channel.send({ type: 'broadcast', event: 'player-leave', payload: { id: player.id } });
+  if (channel) {
+    channel.untrack();
   }
 });
 </script>
