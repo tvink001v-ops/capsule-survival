@@ -97,7 +97,7 @@ import { createClient } from '@supabase/supabase-js';
 const SUPABASE_URL = 'https://ntveumbrjmiohkwyousi.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_SxPUHPfXoTjkdKUOT-WbGg_L5SBhEkd';
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-const CHANNEL_NAME = 'game-room-3d-v2';
+const CHANNEL_NAME = 'game-room-3d-v3';
 
 // ============ УСТРОЙСТВО ============
 function detectDevice() {
@@ -122,7 +122,7 @@ document.getElementById('hint').innerHTML = isMobile
   ? '📱 Джойстик слева — движение<br>👆 Свайп справа — обзор<br>🦘 JUMP — прыжок'
   : '🖱️ WASD — движение · Мышь — обзор<br>Space — прыжок · Shift — бег';
 
-// ============ СЦЕНА ============
+// ============ СЦЕНА (без колонн) ============
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87ceeb);
 scene.fog = new THREE.Fog(0x87ceeb, 40, 150);
@@ -145,6 +145,7 @@ if (!isMobile) {
 scene.add(sun);
 scene.add(new THREE.AmbientLight(0xffffff, 0.6));
 
+// Земля с сеткой для ощущения движения
 const ground = new THREE.Mesh(
   new THREE.PlaneGeometry(200, 200),
   new THREE.MeshStandardMaterial({ color: 0x4a8f3a })
@@ -153,17 +154,14 @@ ground.rotation.x = -Math.PI / 2;
 ground.receiveShadow = !isMobile;
 scene.add(ground);
 
-const boxMat = new THREE.MeshStandardMaterial({ color: 0x9b6b4a });
-const boxes = [
-  [5, 2.5, 0], [-5, 2.5, -3], [0, 1.5, -8], [10, 4, 5], [-12, 3, 8],
-  [3, 1, 12], [-8, 5, -12], [15, 2, -10], [-15, 1.5, 0], [20, 3, 15], [-20, 2, -15],
-];
-for (const [x, h, z] of boxes) {
-  const b = new THREE.Mesh(new THREE.BoxGeometry(3, h*2, 3), boxMat);
-  b.position.set(x, h, z);
-  b.castShadow = !isMobile;
-  b.receiveShadow = !isMobile;
-  scene.add(b);
+// Небольшие декоративные пятна (плоские, без коллизий)
+const patchMat = new THREE.MeshStandardMaterial({ color: 0x3d7a2f });
+for (let i = 0; i < 30; i++) {
+  const s = 1 + Math.random() * 3;
+  const patch = new THREE.Mesh(new THREE.CircleGeometry(s, 16), patchMat);
+  patch.rotation.x = -Math.PI / 2;
+  patch.position.set((Math.random() - 0.5) * 180, 0.01, (Math.random() - 0.5) * 180);
+  scene.add(patch);
 }
 
 // ============ ИГРОК ============
@@ -277,56 +275,180 @@ function updateJoystick(cx, cy) {
   touchState.moveY = dy / maxR;
 }
 
-// ============ МОДЕЛЬКА ============
+// ============ МОДЕЛЬКА ЧЕЛОВЕЧКА В ШОРТАХ ============
+// Вся модель стоит на y=0 (ноги на земле). Группа позиционируется по x/y/z.
 function createHumanoid(name, color, deviceIcon) {
   const g = new THREE.Group();
   const clothColor = new THREE.Color(color);
   const skinColor = new THREE.Color(0xffd7a8);
-  const pantsColor = clothColor.clone().multiplyScalar(0.6);
+  const shortsColor = clothColor.clone().multiplyScalar(0.5);
   const shoeColor = new THREE.Color(0x2a2a2a);
+  const hairColor = new THREE.Color(0x3a2a1a);
+
   const skinMat  = new THREE.MeshStandardMaterial({ color: skinColor, roughness: 0.8 });
   const clothMat = new THREE.MeshStandardMaterial({ color: clothColor, roughness: 0.9 });
-  const pantsMat = new THREE.MeshStandardMaterial({ color: pantsColor, roughness: 0.9 });
+  const shortsMat = new THREE.MeshStandardMaterial({ color: shortsColor, roughness: 0.9 });
   const shoeMat  = new THREE.MeshStandardMaterial({ color: shoeColor, roughness: 0.7 });
-  const hairMat  = new THREE.MeshStandardMaterial({ color: 0x3a2a1a, roughness: 0.8 });
+  const hairMat  = new THREE.MeshStandardMaterial({ color: hairColor, roughness: 0.8 });
   const shadow = !isMobile;
 
-  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.75, 0.32), clothMat);
-  torso.position.y = 1.15; torso.castShadow = shadow; g.add(torso);
+  // --- Ноги (от бедра до колена — голые, потом шорты) ---
+  // ВАЖНО: пивот ноги на уровне бедра (y=0.75), нога свисает вниз
+  const thighLen = 0.45;   // бедро (в шортах)
+  const shinLen  = 0.35;   // голень (голая)
 
-  const head = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.4, 0.36), skinMat);
-  head.position.y = 1.78; head.castShadow = shadow; g.add(head);
+  // Левая нога
+  const legL = new THREE.Group();
+  legL.position.set(-0.14, 0.75, 0);
 
-  const hair = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.14, 0.38), hairMat);
-  hair.position.y = 1.98; hair.castShadow = shadow; g.add(hair);
+  // Бедро — в шортах
+  const thighL = new THREE.Mesh(
+    new THREE.BoxGeometry(0.22, thighLen, 0.22),
+    shortsMat
+  );
+  thighL.position.y = -thighLen/2;
+  thighL.castShadow = shadow;
+  legL.add(thighL);
 
-  const eyeGeo = new THREE.BoxGeometry(0.06, 0.08, 0.02);
-  const eyeMat = new THREE.MeshStandardMaterial({ color: 0x000000 });
-  const eyeL = new THREE.Mesh(eyeGeo, eyeMat); eyeL.position.set(-0.08, 1.80, -0.19); g.add(eyeL);
-  const eyeR = new THREE.Mesh(eyeGeo, eyeMat); eyeR.position.set(0.08, 1.80, -0.19); g.add(eyeR);
+  // Голень — голая кожа
+  const shinL = new THREE.Mesh(
+    new THREE.BoxGeometry(0.18, shinLen, 0.18),
+    skinMat
+  );
+  shinL.position.y = -thighLen - shinLen/2;
+  shinL.castShadow = shadow;
+  legL.add(shinL);
 
-  const armGeo = new THREE.BoxGeometry(0.16, 0.65, 0.16);
-  const armL = new THREE.Group(); armL.position.set(-0.36, 1.45, 0);
-  const armLMesh = new THREE.Mesh(armGeo, clothMat); armLMesh.position.y = -0.32; armLMesh.castShadow = shadow; armL.add(armLMesh);
-  const handL = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.16, 0.16), skinMat); handL.position.y = -0.7; handL.castShadow = shadow; armL.add(handL);
-  g.add(armL);
+  // Ботинок
+  const shoeL = new THREE.Mesh(
+    new THREE.BoxGeometry(0.24, 0.12, 0.32),
+    shoeMat
+  );
+  shoeL.position.set(0, -thighLen - shinLen - 0.06, 0.05);
+  shoeL.castShadow = shadow;
+  legL.add(shoeL);
 
-  const armR = new THREE.Group(); armR.position.set(0.36, 1.45, 0);
-  const armRMesh = new THREE.Mesh(armGeo, clothMat); armRMesh.position.y = -0.32; armRMesh.castShadow = shadow; armR.add(armRMesh);
-  const handR = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.16, 0.16), skinMat); handR.position.y = -0.7; handR.castShadow = shadow; armR.add(handR);
-  g.add(armR);
-
-  const legGeo = new THREE.BoxGeometry(0.2, 0.7, 0.2);
-  const legL = new THREE.Group(); legL.position.set(-0.14, 0.78, 0);
-  const legLMesh = new THREE.Mesh(legGeo, pantsMat); legLMesh.position.y = -0.35; legLMesh.castShadow = shadow; legL.add(legLMesh);
-  const shoeL = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.14, 0.3), shoeMat); shoeL.position.set(0, -0.72, 0.05); shoeL.castShadow = shadow; legL.add(shoeL);
   g.add(legL);
 
-  const legR = new THREE.Group(); legR.position.set(0.14, 0.78, 0);
-  const legRMesh = new THREE.Mesh(legGeo, pantsMat); legRMesh.position.y = -0.35; legRMesh.castShadow = shadow; legR.add(legRMesh);
-  const shoeR = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.14, 0.3), shoeMat); shoeR.position.set(0, -0.72, 0.05); shoeR.castShadow = shadow; legR.add(shoeR);
+  // Правая нога
+  const legR = new THREE.Group();
+  legR.position.set(0.14, 0.75, 0);
+
+  const thighR = new THREE.Mesh(
+    new THREE.BoxGeometry(0.22, thighLen, 0.22),
+    shortsMat
+  );
+  thighR.position.y = -thighLen/2;
+  thighR.castShadow = shadow;
+  legR.add(thighR);
+
+  const shinR = new THREE.Mesh(
+    new THREE.BoxGeometry(0.18, shinLen, 0.18),
+    skinMat
+  );
+  shinR.position.y = -thighLen - shinLen/2;
+  shinR.castShadow = shadow;
+  legR.add(shinR);
+
+  const shoeR = new THREE.Mesh(
+    new THREE.BoxGeometry(0.24, 0.12, 0.32),
+    shoeMat
+  );
+  shoeR.position.set(0, -thighLen - shinLen - 0.06, 0.05);
+  shoeR.castShadow = shadow;
+  legR.add(shoeR);
+
   g.add(legR);
 
+  // --- Торс (футболка) ---
+  // Низ торса на уровне талии (y = 0.75 + 0.05 = 0.8), верх на 1.55
+  const torso = new THREE.Mesh(
+    new THREE.BoxGeometry(0.55, 0.75, 0.32),
+    clothMat
+  );
+  torso.position.y = 0.75 + 0.05 + 0.75/2; // = 1.175
+  torso.castShadow = shadow;
+  g.add(torso);
+
+  // --- Голова ---
+  const head = new THREE.Mesh(
+    new THREE.BoxGeometry(0.36, 0.4, 0.36),
+    skinMat
+  );
+  head.position.y = torso.position.y + 0.75/2 + 0.2 + 0.02; // над торсом
+  // = 1.175 + 0.375 + 0.22 = 1.77
+  head.castShadow = shadow;
+  g.add(head);
+
+  // Волосы
+  const hair = new THREE.Mesh(
+    new THREE.BoxGeometry(0.38, 0.12, 0.38),
+    hairMat
+  );
+  hair.position.y = head.position.y + 0.26;
+  hair.castShadow = shadow;
+  g.add(hair);
+
+  // Глаза — на передней грани головы (голова повёрнута "лицом" в -Z)
+  const eyeGeo = new THREE.BoxGeometry(0.06, 0.08, 0.02);
+  const eyeMat = new THREE.MeshStandardMaterial({ color: 0x000000 });
+  const eyeL = new THREE.Mesh(eyeGeo, eyeMat);
+  eyeL.position.set(-0.08, head.position.y + 0.02, -0.19);
+  g.add(eyeL);
+  const eyeR = new THREE.Mesh(eyeGeo, eyeMat);
+  eyeR.position.set(0.08, head.position.y + 0.02, -0.19);
+  g.add(eyeR);
+
+  // --- Руки (от плеча вниз) ---
+  const armLen = 0.6;
+  const armPivotY = torso.position.y + 0.75/2 - 0.1; // = 1.45
+
+  // Левая рука
+  const armL = new THREE.Group();
+  armL.position.set(-0.36, armPivotY, 0);
+
+  const armLMesh = new THREE.Mesh(
+    new THREE.BoxGeometry(0.16, armLen, 0.16),
+    clothMat // рукав футболки
+  );
+  armLMesh.position.y = -armLen/2;
+  armLMesh.castShadow = shadow;
+  armL.add(armLMesh);
+
+  // Кисть
+  const handL = new THREE.Mesh(
+    new THREE.BoxGeometry(0.16, 0.16, 0.16),
+    skinMat
+  );
+  handL.position.y = -armLen - 0.05;
+  handL.castShadow = shadow;
+  armL.add(handL);
+
+  g.add(armL);
+
+  // Правая рука
+  const armR = new THREE.Group();
+  armR.position.set(0.36, armPivotY, 0);
+
+  const armRMesh = new THREE.Mesh(
+    new THREE.BoxGeometry(0.16, armLen, 0.16),
+    clothMat
+  );
+  armRMesh.position.y = -armLen/2;
+  armRMesh.castShadow = shadow;
+  armR.add(armRMesh);
+
+  const handR = new THREE.Mesh(
+    new THREE.BoxGeometry(0.16, 0.16, 0.16),
+    skinMat
+  );
+  handR.position.y = -armLen - 0.05;
+  handR.castShadow = shadow;
+  armR.add(handR);
+
+  g.add(armR);
+
+  // --- Ник над головой ---
   const canvas = document.createElement('canvas');
   canvas.width = 384; canvas.height = 96;
   const ctx = canvas.getContext('2d');
@@ -336,8 +458,12 @@ function createHumanoid(name, color, deviceIcon) {
   ctx.font = 'bold 36px sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(`${deviceIcon || '❓'} ${name}`, 192, 48);
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(canvas), depthTest: false }));
-  sprite.scale.set(2.8, 0.7, 1); sprite.position.y = 2.55; g.add(sprite);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: new THREE.CanvasTexture(canvas), depthTest: false
+  }));
+  sprite.scale.set(2.8, 0.7, 1);
+  sprite.position.y = head.position.y + 0.55;
+  g.add(sprite);
 
   let phase = 0;
   return {
@@ -346,18 +472,22 @@ function createHumanoid(name, color, deviceIcon) {
       if (moving) {
         phase += dt * 10;
         const swing = Math.sin(phase) * 0.7;
-        armL.rotation.x = swing; armR.rotation.x = -swing;
-        legL.rotation.x = -swing; legR.rotation.x = swing;
+        armL.rotation.x = swing;
+        armR.rotation.x = -swing;
+        legL.rotation.x = -swing;
+        legR.rotation.x = swing;
       } else {
-        armL.rotation.x *= 0.85; armR.rotation.x *= 0.85;
-        legL.rotation.x *= 0.85; legR.rotation.x *= 0.85;
+        armL.rotation.x *= 0.85;
+        armR.rotation.x *= 0.85;
+        legL.rotation.x *= 0.85;
+        legR.rotation.x *= 0.85;
         phase = 0;
       }
     }
   };
 }
 
-// ============ SUPABASE REALTIME ============
+// ============ SUPABASE ============
 let channel = null;
 const others = new Map();
 
@@ -372,7 +502,6 @@ function connectRealtime(name) {
     }
   });
 
-  // 1. Слушаем позиции других
   channel.on('broadcast', { event: 'player-move' }, ({ payload }) => {
     if (payload.id === player.id) return;
     const o = others.get(payload.id);
@@ -382,7 +511,6 @@ function connectRealtime(name) {
     }
   });
 
-  // 2. Presence: синхронизация списка игроков (надёжнее, чем ручной join)
   channel.on('presence', { event: 'sync' }, () => {
     const state = channel.presenceState();
     const currentIds = new Set();
@@ -401,7 +529,6 @@ function connectRealtime(name) {
       }
     }
 
-    // Удаляем тех, кто вышел
     for (const id of others.keys()) {
       if (!currentIds.has(id)) removePlayer(id);
     }
@@ -412,7 +539,6 @@ function connectRealtime(name) {
       console.log('Connected to Supabase Realtime');
       player.subscribed = true;
 
-      // Отправляем свой стейт через Presence (это синхронизирует всех)
       await channel.track({
         name: player.name,
         color: player.color,
@@ -438,6 +564,7 @@ function addPlayer(id, data) {
   const color = new THREE.Color(data.color || 0x888888);
   const devIcon = data.device ? data.device.icon : '❓';
   const model = createHumanoid(data.name || 'Player', color, devIcon);
+  // Ноги на земле: y=0
   model.group.position.set(data.x || 0, data.y || 0, data.z || 0);
   scene.add(model.group);
   others.set(id, {
@@ -454,7 +581,6 @@ function removePlayer(id) {
   if (o) { scene.remove(o.model.group); others.delete(id); }
 }
 
-// Отправка позиции (только после подписки)
 let lastSend = 0;
 function sendMove() {
   if (!channel || !player.subscribed) return;
@@ -467,32 +593,16 @@ function sendMove() {
     payload: {
       id: player.id,
       x: player.pos.x,
-      y: player.pos.y - player.height,
+      y: player.pos.y - player.height, // ноги на земле
       z: player.pos.z,
       yaw: player.yaw,
     }
   });
 }
 
-// ============ КОЛЛИЗИИ ============
-const colliders = boxes.map(([x, h, z]) => ({
-  minX: x - 1.5, maxX: x + 1.5,
-  minZ: z - 1.5, maxZ: z + 1.5,
-  minY: 0, maxY: h * 2,
-}));
-
-function collides(x, y, z) {
-  const r = 0.4;
-  for (const c of colliders) {
-    if (x + r > c.minX && x - r < c.maxX &&
-        z + r > c.minZ && z - r < c.maxZ &&
-        y + 0.1 < c.maxY && y + player.height > c.minY) return true;
-  }
-  return false;
-}
-
 // ============ ОБНОВЛЕНИЕ ============
 const speed = 6, runSpeed = 10, jumpForce = 7, gravity = 20;
+const WORLD_LIMIT = 95;
 
 function update(dt) {
   const forward = new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
@@ -513,13 +623,10 @@ function update(dt) {
 
   const running = keys['ShiftLeft'] || keys['ShiftRight'];
   const spd = running ? runSpeed : speed;
-  const dx = dir.x * spd * dt;
-  const dz = dir.z * spd * dt;
 
-  const newX = player.pos.x + dx;
-  if (!collides(newX, player.pos.y, player.pos.z)) player.pos.x = newX;
-  const newZ = player.pos.z + dz;
-  if (!collides(player.pos.x, player.pos.y, newZ)) player.pos.z = newZ;
+  // Простое движение без коллизий (колонн больше нет)
+  player.pos.x += dir.x * spd * dt;
+  player.pos.z += dir.z * spd * dt;
 
   const jumpInput = keys['Space'] || touchState.jump;
   if (jumpInput && player.onGround) {
@@ -537,8 +644,8 @@ function update(dt) {
     player.onGround = false;
   }
 
-  player.pos.x = Math.max(-95, Math.min(95, player.pos.x));
-  player.pos.z = Math.max(-95, Math.min(95, player.pos.z));
+  player.pos.x = Math.max(-WORLD_LIMIT, Math.min(WORLD_LIMIT, player.pos.x));
+  player.pos.z = Math.max(-WORLD_LIMIT, Math.min(WORLD_LIMIT, player.pos.z));
 
   camera.position.copy(player.pos);
   camera.rotation.order = 'YXZ';
@@ -603,9 +710,7 @@ renderer.domElement.addEventListener('click', () => {
 document.addEventListener('contextmenu', e => e.preventDefault());
 
 window.addEventListener('beforeunload', () => {
-  if (channel) {
-    channel.untrack();
-  }
+  if (channel) channel.untrack();
 });
 </script>
 </body>
