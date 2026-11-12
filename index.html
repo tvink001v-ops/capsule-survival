@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>3D Multiplayer — Supabase</title>
+<style>
+  * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
+  html, body { margin:0; padding:0; overflow:hidden; background:#87ceeb;
+               font-family:-apple-system,sans-serif; touch-action:none;
+               -webkit-user-select:none; user-select:none; height:100%; }
+  canvas { display:block; }
+  #hud { position:fixed; top:8px; left:8px; color:#fff; text-shadow:1px 1px 2px #000;
+         font-size:13px; pointer-events:none; z-index:5; }
+  #players { position:fixed; top:8px; right:8px; color:#fff; text-shadow:1px 1px 2px #000;
+             font-size:12px; text-align:right; pointer-events:none; z-index:5;
+             background:rgba(0,0,0,0.25); padding:6px 10px; border-radius:8px;
+             max-width:220px; line-height:1.5; }
+  #players .row { display:flex; align-items:center; gap:6px; justify-content:flex-end; }
+  #players .dev { opacity:0.7; font-size:11px; }
+  #crosshair { position:fixed; left:50%; top:50%; width:6px; height:6px; background:#fff;
+               margin:-3px; border-radius:50%; pointer-events:none; z-index:5; display:none; }
+  #menu { position:fixed; inset:0; background:rgba(0,0,0,0.88); color:#fff;
+          display:flex; flex-direction:column; align-items:center; justify-content:center;
+          z-index:100; padding:20px; text-align:center; }
+  #menu h1 { margin:0 0 8px; font-size:26px; }
+  #menu p.sub { margin:0 0 24px; opacity:0.6; font-size:13px; }
+  #menu input { padding:12px; font-size:16px; width:80%; max-width:280px;
+                margin-bottom:12px; border-radius:8px; border:none; text-align:center; }
+  #menu button { padding:14px 40px; font-size:17px; cursor:pointer;
+                 border-radius:8px; border:none; background:#4CAF50; color:#fff;
+                 font-weight:bold; }
+  #menu .hint { margin-top:24px; opacity:0.5; font-size:12px; line-height:1.6; max-width:340px; }
+  #menu .err { color:#ff6b6b; font-size:13px; margin-top:8px; min-height:18px; }
+  #deviceInfo { position:fixed; bottom:8px; left:8px; font-size:11px; color:#fff;
+                text-shadow:1px 1px 2px #000; opacity:0.6; z-index:5; pointer-events:none; }
+  #touchUI { display:none; position:fixed; inset:0; pointer-events:none; z-index:10; }
+  #touchUI.active { display:block; }
+  #joyBase { position:fixed; left:20px; bottom:20px; width:130px; height:130px;
+             border-radius:50%; background:rgba(255,255,255,0.15);
+             border:2px solid rgba(255,255,255,0.35); pointer-events:auto;
+             touch-action:none; }
+  #joyKnob { position:absolute; left:50%; top:50%; width:56px; height:56px;
+             margin:-28px 0 0 -28px; border-radius:50%;
+             background:rgba(255,255,255,0.6); pointer-events:none;
+             transition:transform 0.05s; }
+  #jumpBtn { position:fixed; right:24px; bottom:30px; width:84px; height:84px;
+             border-radius:50%; background:rgba(76,175,80,0.75);
+             border:2px solid rgba(255,255,255,0.6); color:#fff; font-size:14px;
+             font-weight:bold; pointer-events:auto; touch-action:none;
+             display:flex; align-items:center; justify-content:center; user-select:none; }
+  #jumpBtn:active, #jumpBtn.pressed { background:rgba(76,175,80,1); transform:scale(0.95); }
+  #lookZone { position:fixed; right:0; top:0; width:60%; height:100%;
+              pointer-events:auto; touch-action:none; }
+  #fullscreenBtn { position:fixed; top:8px; right:8px; z-index:20;
+                   background:rgba(0,0,0,0.5); color:#fff; border:none;
+                   padding:6px 10px; border-radius:6px; font-size:12px; display:none; }
+  @media (pointer: coarse) { #fullscreenBtn { display:block; } }
+</style>
+</head>
+<body>
+<div id="menu">
+  <h1>🎮 3D Multiplayer</h1>
+  <p class="sub">Supabase Realtime</p>
+  <input id="nameInput" placeholder="Ваше имя" maxlength="16" autocomplete="off" />
+  <button id="joinBtn">Войти</button>
+  <div class="err" id="err"></div>
+  <div class="hint" id="hint"></div>
+</div>
+<div id="hud"></div>
+<div id="players"></div>
+<div id="crosshair"></div>
+<div id="deviceInfo"></div>
+<button id="fullscreenBtn">⛶</button>
+
+<div id="touchUI">
+  <div id="lookZone"></div>
+  <div id="joyBase"><div id="joyKnob"></div></div>
+  <div id="jumpBtn">JUMP</div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "@supabase/supabase-js": "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { createClient } from '@supabase/supabase-js';
+
+// ============ НАСТРОЙКИ SUPABASE ============
+const SUPABASE_URL = 'https://ntveumbrjmiohkwyousi.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_SxPUHPfXoTjkdKUOT-WbGg_L5SBhEkd';
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+const CHANNEL_NAME = 'game-room-3d';
+
+// ============ ОПРЕДЕЛЕНИЕ УСТРОЙСТВА ============
+function detectDevice() {
+  const ua = navigator.userAgent;
+  const platform = navigator.platform || '';
+  const touch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+  const res = `${screen.width || innerWidth}x${screen.height || innerHeight}`;
+  if (/iPhone/i.test(ua)) return { icon: '📱', label: 'iPhone', detail: res };
+  if (/iPad/i.test(ua) || (/Macintosh/i.test(ua) && touch)) return { icon: '📱', label: 'iPad', detail: res };
+  if (/Android/i.test(ua)) return { icon: '📱', label: /Mobile/i.test(ua) ? 'Android' : 'Android-планшет', detail: res };
+  if (/Windows/i.test(ua) || /Win32|Win64|Windows/i.test(platform)) return { icon: '🖥️', label: 'Windows ПК', detail: res };
+  if (/Macintosh|Mac OS X/i.test(ua)) return { icon: '💻', label: 'Mac', detail: res };
+  if (/Linux/i.test(ua)) return { icon: '🐧', label: 'Linux', detail: res };
+  return { icon: '❓', label: 'Устройство', detail: res };
+}
+
+const DEVICE = detectDevice();
+const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || DEVICE.label.includes('Android') || DEVICE.label.includes('iPhone') || DEVICE.label.includes('iPad');
+
+document.getElementById('deviceInfo').textContent = `${DEVICE.icon} ${DEVICE.label} · ${DEVICE.detail}`;
+document.getElementById('hint').innerHTML = isMobile
+  ? '📱 Джойстик слева — движение<br>👆 Свайп справа — обзор<br>🦘 JUMP — прыжок'
+  : '🖱️ WASD — движение · Мышь — обзор<br>Space — прыжок · Shift — бег';
+
+// ============ СЦЕНА ============
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87ceeb);
+scene.fog = new THREE.Fog(0x87ceeb, 40, 150);
+
+const camera = new THREE.PerspectiveCamera(75, innerWidth/innerHeight, 0.1, 500);
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio, isMobile ? 1.5 : 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = !isMobile;
+document.body.insertBefore(renderer.domElement, document.body.firstChild);
+
+const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+sun.position.set(30, 50, 20);
+if (!isMobile) {
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(1024, 1024);
+  sun.shadow.camera.left = -60; sun.shadow.camera.right = 60;
+  sun.shadow.camera.top = 60; sun.shadow.camera.bottom = -60;
+}
+scene.add(sun);
+scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(200, 200),
+  new THREE.MeshStandardMaterial({ color: 0x4a8f3a })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = !isMobile;
+scene.add(ground);
+
+const boxMat = new THREE.MeshStandardMaterial({ color: 0x9b6b4a });
+const boxes = [
+  [5, 2.5, 0], [-5, 2.5, -3], [0, 1.5, -8], [10, 4, 5], [-12, 3, 8],
+  [3, 1, 12], [-8, 5, -12], [15, 2, -10], [-15, 1.5, 0], [20, 3, 15], [-20, 2, -15],
+];
+for (const [x, h, z] of boxes) {
+  const b = new THREE.Mesh(new THREE.BoxGeometry(3, h*2, 3), boxMat);
+  b.position.set(x, h, z);
+  b.castShadow = !isMobile;
+  b.receiveShadow = !isMobile;
+  scene.add(b);
+}
+
+// ============ ИГРОК ============
+const player = {
+  pos: new THREE.Vector3(0, 1.7, 10),
+  vel: new THREE.Vector3(),
+  yaw: 0, pitch: 0,
+  onGround: true, height: 1.7,
+  name: '',
+  id: null,
+  color: null,
+};
+
+// ============ ВВОД ПК ============
+const keys = {};
+let mouseLocked = false;
+addEventListener('keydown', e => { keys[e.code] = true; });
+addEventListener('keyup', e => { keys[e.code] = false; });
+addEventListener('mousemove', e => {
+  if (!mouseLocked) return;
+  player.yaw   -= e.movementX * 0.0022;
+  player.pitch -= e.movementY * 0.0022;
+  player.pitch = Math.max(-Math.PI/2 + 0.01, Math.min(Math.PI/2 - 0.01, player.pitch));
+});
+document.addEventListener('pointerlockchange', () => {
+  mouseLocked = document.pointerLockElement === renderer.domElement;
+});
+
+// ============ ТАЧ ============
+const touchState = {
+  moveX: 0, moveY: 0, jump: false,
+  joyId: null, lookId: null,
+  joyStart: { x: 0, y: 0 }, lookLast: { x: 0, y: 0 },
+};
+const joyBase = document.getElementById('joyBase');
+const joyKnob = document.getElementById('joyKnob');
+const lookZone = document.getElementById('lookZone');
+const jumpBtn = document.getElementById('jumpBtn');
+const touchUI = document.getElementById('touchUI');
+
+function enableTouchUI() {
+  touchUI.classList.add('active');
+  joyBase.addEventListener('touchstart', e => {
+    e.preventDefault();
+    const t = e.changedTouches[0];
+    touchState.joyId = t.identifier;
+    const r = joyBase.getBoundingClientRect();
+    touchState.joyStart.x = r.left + r.width/2;
+    touchState.joyStart.y = r.top + r.height/2;
+    updateJoystick(t.clientX, t.clientY);
+  }, { passive: false });
+  lookZone.addEventListener('touchstart', e => {
+    e.preventDefault();
+    const t = e.changedTouches[0];
+    touchState.lookId = t.identifier;
+    touchState.lookLast.x = t.clientX;
+    touchState.lookLast.y = t.clientY;
+  }, { passive: false });
+  jumpBtn.addEventListener('touchstart', e => {
+    e.preventDefault();
+    touchState.jump = true;
+    jumpBtn.classList.add('pressed');
+  }, { passive: false });
+  jumpBtn.addEventListener('touchend', e => {
+    e.preventDefault();
+    touchState.jump = false;
+    jumpBtn.classList.remove('pressed');
+  }, { passive: false });
+  document.addEventListener('touchmove', e => {
+    e.preventDefault();
+    for (const t of e.changedTouches) {
+      if (t.identifier === touchState.joyId) {
+        updateJoystick(t.clientX, t.clientY);
+      } else if (t.identifier === touchState.lookId) {
+        const dx = t.clientX - touchState.lookLast.x;
+        const dy = t.clientY - touchState.lookLast.y;
+        touchState.lookLast.x = t.clientX;
+        touchState.lookLast.y = t.clientY;
+        player.yaw   -= dx * 0.005;
+        player.pitch -= dy * 0.005;
+        player.pitch = Math.max(-Math.PI/2 + 0.01, Math.min(Math.PI/2 - 0.01, player.pitch));
+      }
+    }
+  }, { passive: false });
+  document.addEventListener('touchend', e => {
+    for (const t of e.changedTouches) {
+      if (t.identifier === touchState.joyId) {
+        touchState.joyId = null; touchState.moveX = 0; touchState.moveY = 0;
+        joyKnob.style.transform = '';
+      }
+      if (t.identifier === touchState.lookId) touchState.lookId = null;
+    }
+  }, { passive: false });
+  document.addEventListener('touchcancel', () => {
+    touchState.joyId = null; touchState.lookId = null;
+    touchState.moveX = 0; touchState.moveY = 0;
+    touchState.jump = false;
+    joyKnob.style.transform = '';
+    jumpBtn.classList.remove('pressed');
+  });
+}
+function updateJoystick(cx, cy) {
+  let dx = cx - touchState.joyStart.x;
+  let dy = cy - touchState.joyStart.y;
+  const maxR = 50;
+  const d = Math.hypot(dx, dy);
+  if (d > maxR) { dx = dx / d * maxR; dy = dy / d * maxR; }
+  joyKnob.style.transform = `translate(${dx}px, ${dy}px)`;
+  touchState.moveX = dx / maxR;
+  touchState.moveY = dy / maxR;
+}
+
+// ============ МОДЕЛЬКА ЧЕЛОВЕЧКА ============
+function createHumanoid(name, color, deviceIcon) {
+  const g = new THREE.Group();
+  const clothColor = new THREE.Color(color);
+  const skinColor = new THREE.Color(0xffd7a8);
+  const pantsColor = clothColor.clone().multiplyScalar(0.6);
+  const shoeColor = new THREE.Color(0x2a2a2a);
+  const skinMat  = new THREE.MeshStandardMaterial({ color: skinColor, roughness: 0.8 });
+  const clothMat = new THREE.MeshStandardMaterial({ color: clothColor, roughness: 0.9 });
+  const pantsMat = new THREE.MeshStandardMaterial({ color: pantsColor, roughness: 0.9 });
+  const shoeMat  = new THREE.MeshStandardMaterial({ color: shoeColor, roughness: 0.7 });
+  const hairMat  = new THREE.MeshStandardMaterial({ color: 0x3a2a1a, roughness: 0.8 });
+  const shadow = !isMobile;
+
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.75, 0.32), clothMat);
+  torso.position.y = 1.15; torso.castShadow = shadow; g.add(torso);
+
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.4, 0.36), skinMat);
+  head.position.y = 1.78; head.castShadow = shadow; g.add(head);
+
+  const hair = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.14, 0.38), hairMat);
+  hair.position.y = 1.98; hair.castShadow = shadow; g.add(hair);
+
+  const eyeGeo = new THREE.BoxGeometry(0.06, 0.08, 0.02);
+  const eyeMat = new THREE.MeshStandardMaterial({ color: 0x000000 });
+  const eyeL = new THREE.Mesh(eyeGeo, eyeMat); eyeL.position.set(-0.08, 1.80, -0.19); g.add(eyeL);
+  const eyeR = new THREE.Mesh(eyeGeo, eyeMat); eyeR.position.set(0.08, 1.80, -0.19); g.add(eyeR);
+
+  const armGeo = new THREE.BoxGeometry(0.16, 0.65, 0.16);
+  const armL = new THREE.Group(); armL.position.set(-0.36, 1.45, 0);
+  const armLMesh = new THREE.Mesh(armGeo, clothMat); armLMesh.position.y = -0.32; armLMesh.castShadow = shadow; armL.add(armLMesh);
+  const handL = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.16, 0.16), skinMat); handL.position.y = -0.7; handL.castShadow = shadow; armL.add(handL);
+  g.add(armL);
+
+  const armR = new THREE.Group(); armR.position.set(0.36, 1.45, 0);
+  const armRMesh = new THREE.Mesh(armGeo, clothMat); armRMesh.position.y = -0.32; armRMesh.castShadow = shadow; armR.add(armRMesh);
+  const handR = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.16, 0.16), skinMat); handR.position.y = -0.7; handR.castShadow = shadow; armR.add(handR);
+  g.add(armR);
+
+  const legGeo = new THREE.BoxGeometry(0.2, 0.7, 0.2);
+  const legL = new THREE.Group(); legL.position.set(-0.14, 0.78, 0);
+  const legLMesh = new THREE.Mesh(legGeo, pantsMat); legLMesh.position.y = -0.35; legLMesh.castShadow = shadow; legL.add(legLMesh);
+  const shoeL = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.14, 0.3), shoeMat); shoeL.position.set(0, -0.72, 0.05); shoeL.castShadow = shadow; legL.add(shoeL);
+  g.add(legL);
+
+  const legR = new THREE.Group(); legR.position.set(0.14, 0.78, 0);
+  const legRMesh = new THREE.Mesh(legGeo, pantsMat); legRMesh.position.y = -0.35; legRMesh.castShadow = shadow; legR.add(legRMesh);
+  const shoeR = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.14, 0.3), shoeMat); shoeR.position.set(0, -0.72, 0.05); shoeR.castShadow = shadow; legR.add(shoeR);
+  g.add(legR);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 384; canvas.height = 96;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.beginPath(); ctx.roundRect(0, 0, 384, 96, 16); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 36px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(`${deviceIcon || '❓'} ${name}`, 192, 48);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(canvas), depthTest: false }));
+  sprite.scale.set(2.8, 0.7, 1); sprite.position.y = 2.55; g.add(sprite);
+
+  let phase = 0;
+  return {
+    group: g,
+    update(dt, moving) {
+      if (moving) {
+        phase += dt * 10;
+        const swing = Math.sin(phase) * 0.7;
+        armL.rotation.x = swing; armR.rotation.x = -swing;
+        legL.rotation.x = -swing; legR.rotation.x = swing;
+      } else {
+        armL.rotation.x *= 0.85; armR.rotation.x *= 0.85;
+        legL.rotation.x *= 0.85; legR.rotation.x *= 0.85;
+        phase = 0;
+      }
+    }
+  };
+}
+
+// ============ SUPABASE REALTIME ============
+let channel = null;
+const others = new Map();
+
+function connectRealtime(name) {
+  document.getElementById('err').textContent = '';
+  player.name = name;
+  player.id = crypto.randomUUID ? crypto.randomUUID() : 'p' + Math.random().toString(36).slice(2);
+  player.color = '#' + new THREE.Color().setHSL(Math.random(), 0.6, 0.55).getHexString();
+
+  // Используем публичный канал (по умолчанию). Ключ publishable работает с публичными каналами.
+  channel = supabase.channel(CHANNEL_NAME, {
+    config: { broadcast: { self: false } }
+  });
+
+  channel.on('broadcast', { event: 'player-move' }, ({ payload }) => {
+    if (payload.id === player.id) return;
+    const o = others.get(payload.id);
+    if (o) {
+      o.targetPos.set(payload.x, payload.y, payload.z);
+      o.targetYaw = payload.yaw;
+    }
+  });
+
+  channel.on('broadcast', { event: 'player-join' }, ({ payload }) => {
+    if (payload.id === player.id) return;
+    addPlayer(payload.id, payload);
+  });
+
+  channel.on('broadcast', { event: 'player-leave' }, ({ payload }) => {
+    if (payload.id === player.id) return;
+    removePlayer(payload.id);
+  });
+
+  channel.on('broadcast', { event: 'sync-request' }, ({ payload }) => {
+    if (payload.id === player.id) return;
+    sendMove(true);
+  });
+
+  channel.subscribe((status) => {
+    if (status === 'SUBSCRIBED') {
+      console.log('Connected to Supabase Realtime');
+      channel.send({
+        type: 'broadcast',
+        event: 'player-join',
+        payload: {
+          id: player.id,
+          name: player.name,
+          color: player.color,
+          x: player.pos.x,
+          y: player.pos.y - player.height,
+          z: player.pos.z,
+          yaw: player.yaw,
+          device: { icon: DEVICE.icon, label: DEVICE.label, detail: DEVICE.detail }
+        }
+      });
+      channel.send({ type: 'broadcast', event: 'sync-request', payload: { id: player.id } });
+      document.getElementById('menu').style.display = 'none';
+      document.getElementById('crosshair').style.display = 'block';
+      if (isMobile) enableTouchUI();
+      else renderer.domElement.requestPointerLock();
+    } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+      document.getElementById('err').textContent = 'Ошибка подключения. Проверь настройки Realtime (публичный доступ к каналам).';
+    }
+  });
+}
+
+function addPlayer(id, data) {
+  if (others.has(id)) return;
+  const color = new THREE.Color(data.color || 0x888888);
+  const devIcon = data.device ? data.device.icon : '❓';
+  const model = createHumanoid(data.name || 'Player', color, devIcon);
+  model.group.position.set(data.x || 0, data.y || 0, data.z || 0);
+  scene.add(model.group);
+  others.set(id, {
+    model,
+    targetPos: new THREE.Vector3(data.x || 0, data.y || 0, data.z || 0),
+    targetYaw: data.yaw || 0,
+    name: data.name || 'Player',
+    device: data.device || null,
+  });
+}
+
+function removePlayer(id) {
+  const o = others.get(id);
+  if (o) { scene.remove(o.model.group); others.delete(id); }
+}
+
+let lastSend = 0;
+function sendMove(force = false) {
+  if (!channel) return;
+  const now = performance.now();
+  if (!force && now - lastSend < 50) return;
+  lastSend = now;
+  channel.send({
+    type: 'broadcast',
+    event: 'player-move',
+    payload: {
+      id: player.id,
+      x: player.pos.x,
+      y: player.pos.y - player.height,
+      z: player.pos.z,
+      yaw: player.yaw,
+    }
+  });
+}
+
+// ============ КОЛЛИЗИИ ============
+const colliders = boxes.map(([x, h, z]) => ({
+  minX: x - 1.5, maxX: x + 1.5,
+  minZ: z - 1.5, maxZ: z + 1.5,
+  minY: 0, maxY: h * 2,
+}));
+
+function collides(x, y, z) {
+  const r = 0.4;
+  for (const c of colliders) {
+    if (x + r > c.minX && x - r < c.maxX &&
+        z + r > c.minZ && z - r < c.maxZ &&
+        y + 0.1 < c.maxY && y + player.height > c.minY) return true;
+  }
+  return false;
+}
+
+// ============ ОБНОВЛЕНИЕ ============
+const speed = 6, runSpeed = 10, jumpForce = 7, gravity = 20;
+
+function update(dt) {
+  const forward = new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
+  const right   = new THREE.Vector3( Math.cos(player.yaw), 0, -Math.sin(player.yaw));
+  const dir = new THREE.Vector3();
+
+  if (keys['KeyW']) dir.add(forward);
+  if (keys['KeyS']) dir.sub(forward);
+  if (keys['KeyD']) dir.add(right);
+  if (keys['KeyA']) dir.sub(right);
+
+  if (isMobile && (touchState.moveX || touchState.moveY)) {
+    dir.add(forward.clone().multiplyScalar(-touchState.moveY));
+    dir.add(right.clone().multiplyScalar(touchState.moveX));
+  }
+
+  if (dir.lengthSq() > 0) dir.normalize();
+
+  const running = keys['ShiftLeft'] || keys['ShiftRight'];
+  const spd = running ? runSpeed : speed;
+  const dx = dir.x * spd * dt;
+  const dz = dir.z * spd * dt;
+
+  const newX = player.pos.x + dx;
+  if (!collides(newX, player.pos.y, player.pos.z)) player.pos.x = newX;
+  const newZ = player.pos.z + dz;
+  if (!collides(player.pos.x, player.pos.y, newZ)) player.pos.z = newZ;
+
+  const jumpInput = keys['Space'] || touchState.jump;
+  if (jumpInput && player.onGround) {
+    player.vel.y = jumpForce;
+    player.onGround = false;
+  }
+  player.vel.y -= gravity * dt;
+  const newY = player.pos.y + player.vel.y * dt;
+  if (newY <= player.height) {
+    player.pos.y = player.height;
+    player.vel.y = 0;
+    player.onGround = true;
+  } else {
+    player.pos.y = newY;
+    player.onGround = false;
+  }
+
+  player.pos.x = Math.max(-95, Math.min(95, player.pos.x));
+  player.pos.z = Math.max(-95, Math.min(95, player.pos.z));
+
+  camera.position.copy(player.pos);
+  camera.rotation.order = 'YXZ';
+  camera.rotation.y = player.yaw;
+  camera.rotation.x = player.pitch;
+
+  for (const o of others.values()) {
+    const before = o.model.group.position.clone();
+    o.model.group.position.lerp(o.targetPos, 0.25);
+    o.model.group.rotation.y = o.targetYaw;
+    const moved = before.distanceTo(o.model.group.position);
+    o.model.update(dt, moved > 0.01);
+  }
+
+  document.getElementById('hud').textContent = `👥 ${others.size + 1}`;
+
+  let html = '<b>Игроки:</b><br>';
+  for (const o of others.values()) {
+    const d = o.device;
+    const devStr = d ? `${d.icon} ${d.label}` : '❓';
+    html += `<div class="row"><span class="dev">${devStr}</span></div>`;
+    html += `<div class="row">• ${o.name}</div>`;
+  }
+  document.getElementById('players').innerHTML = html;
+}
+
+// ============ ГЛАВНЫЙ ЦИКЛ ============
+let last = performance.now();
+function animate(now) {
+  const dt = Math.min((now - last) / 1000, 0.1);
+  last = now;
+  if (player.name && channel) {
+    update(dt);
+    sendMove();
+  }
+  renderer.render(scene, camera);
+  requestAnimationFrame(animate);
+}
+requestAnimationFrame(animate);
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+addEventListener('orientationchange', () => setTimeout(() => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+}, 200));
+
+// ============ UI ============
+document.getElementById('joinBtn').addEventListener('click', () => {
+  const name = document.getElementById('nameInput').value.trim() || 'Player';
+  connectRealtime(name);
+});
+document.getElementById('nameInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('joinBtn').click();
+});
+
+renderer.domElement.addEventListener('click', () => {
+  if (!isMobile && player.name && !mouseLocked) {
+    renderer.domElement.requestPointerLock();
+  }
+});
+
+document.addEventListener('contextmenu', e => e.preventDefault());
+
+window.addEventListener('beforeunload', () => {
+  if (channel && player.id) {
+    channel.send({ type: 'broadcast', event: 'player-leave', payload: { id: player.id } });
+  }
+});
+</script>
+</body>
+</html>
